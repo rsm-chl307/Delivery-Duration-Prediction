@@ -81,19 +81,139 @@ These features are predictions generated from other models for various stages of
 
 ---
 
-## Practicalities
+## 🛠 Data Preparation & Cleaning  
 
-You are required to build a model to predict the **total delivery duration (in seconds)** as defined above.  
-You are encouraged to generate **additional features** from the given data to improve model performance.
+### 1. Outlier and Data Quality Checks  
 
-Please include explanations for the following:
+- Removed rows where the following variables had **negative values** (logically impossible):  
+  - `min_item_price`  
+  - `total_onshift_dashers`  
+  - `total_busy_dashers`  
+  - `total_outstanding_orders`  
 
-- Model(s) used  
-- How you evaluated model performance on the historical data  
-- Any data preprocessing you performed  
-- Feature engineering choices you made  
-- Any other information you wish to share about your modeling approach
+- Trimmed extreme outliers in the target by removing observations above the **99th percentile** of delivery duration.
 
-The project is expected to take approximately **3–5 hours** in total, though you may spend more time if desired.  
-You may use **any open-source packages** for this task.
+### 2. Log Transformation  
+
+The target and many numeric features were **heavily right-skewed**.  
+To stabilize variance and reduce the impact of extreme values we applied:
+
+- `log_target = log1p(target)`  
+- `log_subtotal`  
+- `log_min_item_price`  
+- `log_max_item_price`  
+- `log_total_items`  
+- `log_num_distinct_items`  
+- `log_total_onshift_dashers`  
+- `log_total_busy_dashers`  
+- `log_total_outstanding_orders`  
+- `log_estimated_order_place_duration`  
+
+The original numeric columns were dropped after transformation, keeping only their log versions.
+
+### 3. Encoding Categorical Variables  
+
+- `store_id` and `store_primary_category`  
+  - **Target encoding** to convert high-cardinality categories into informative numeric representations.  
+
+- `market_id` and `order_protocol`  
+  - **One-hot encoding** (low cardinality, suitable for dummy variables).  
+
+---
+
+## 🧩 Feature Engineering  
+
+We engineered more than **15 business-driven features** to capture order complexity, marketplace pressure, and restaurant efficiency. A few key examples:
+
+- `fe_difficulty_score`  
+  - Composite index combining order complexity, demand pressure, and preparation time.  
+  - Designed to measure how operationally “difficult” an order is to fulfill.
+
+- `fe_store_demand_intensity`  
+  - Interaction between store behavior (`store_id` encoding) and outstanding orders.  
+  - Highlights stores that perform poorly when demand is high.
+
+- `fe_dasher_load_ratio`  
+  - Approximates the ratio of busy dashers to on-shift dashers in log space.  
+  - Captures courier overload and market congestion.
+
+- `fe_demand_pressure`  
+  - Outstanding orders relative to available dashers.  
+  - Higher values imply longer expected wait times.
+
+- `fe_order_value_index`  
+  - Combines subtotal and item diversity as a proxy for large, complex, high-value orders.
+
+- `fe_prep_pressure`  
+  - Sum of log(total items), log(distinct items), and log(prep duration).  
+  - Measures restaurant-side preparation difficulty.
+
+- `fe_distance_adjusted_pressure` and `fe_market_congestion`  
+  - Combine demand pressure and estimated driving duration to reflect both kitchen and travel constraints.
+
+All engineered features were added to `df_train_log_fe` and `df_test_log_fe`.
+
+---
+
+## 🧠 Models Explored  
+
+### 1. Baseline Linear Regression (OLS)  
+
+- Fitted on the **original (non-log) target**.  
+- Exhibited strong heteroscedasticity and non-normal residuals.  
+- R² around **0.29**, confirming the need for transformation.
+
+### 2. Log-Transformed Linear Regression (OLS)  
+
+- Response: `log_target`  
+- Predictors: original engineered and transformed features.  
+- Residual diagnostics improved substantially (more normal, more constant variance).  
+- R² in the low **0.30s** on the log scale.
+
+### 3. Ridge Regression (Regularized Linear Model) — *Explored, Not Selected as Final*  
+
+- Used scikit-learn `RidgeCV` with cross-validated α values.  
+- Helped stabilize coefficients under multicollinearity but **did not deliver a major lift** in out-of-sample R² or RMSE compared with the simpler OLS on the engineered features.  
+- For interpretability and simplicity, we chose to keep the **non-regularized OLS** as the final model.
+
+### 4. Multi-Layer Perceptron (Neural Network) — *Explored, Not Selected as Final*  
+
+- Architecture examples:
+  - Hidden layers: `(3, 3)`  
+  - Activation: `tanh`  
+  - Solver: `lbfgs`  
+  - Alpha: 1  
+  - Max iterations: 1,000,000  
+
+- Performance (on log target):  
+  - R² ≈ **0.35**  
+
+- When predictions were transformed back to the original scale (`expm1`),  
+  - R² ≈ **0.29**, very close to the linear model.  
+
+Because the neural network introduced additional complexity without material performance gains, it was **not chosen as the final production model**.
+
+---
+
+## 🏁 Final Model  
+
+**Final model:**  
+> Ordinary Least Squares Regression  
+> Using **log-transformed target** and the **feature-engineered dataset** (`df_train_log_fe`, `df_test_log_fe`),  
+> **without Ridge regularization**.
+
+Predictions are generated in log space and then transformed back to the original scale:
+
+\[
+\hat{y}_{\text{seconds}} = \exp(\hat{y}_{\text{log}}) - 1
+\]
+
+### Final Performance (Original Scale)
+
+On the test set (`df_test_log_fe`):
+
+```text
+Test RMSE (original scale): 829.866 seconds
+Test MAE  (original scale): 620.762 seconds
+Test R²   (original scale): 0.292
 
